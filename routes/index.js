@@ -32,46 +32,122 @@ const getRate = async () => {
     // return response.rate
     return Math.random() + 1
 }
+
+const calculate = (amount, rate, price) => {
+    // TODO: not sure what is the correct equations
+    // return amount * (1 + rate - price)
+    return amount * rate
+}
 const processTrades = async (trades) => {
 
     // TODO handle corrupted csv file
 
     // remove header
     trades = trades.slice(1)
-    const rate = await getRate()
 
-    const data = trades.map((trade) => {
-            const id = trade[0];
-            const type = trade[1].toLowerCase();
-            const price = Number(trade[2]);
-            const amount = Number(trade[3]);
-            let status = "Executed"
-            if (type === "buy" && price <= rate)
-                status = "Denied"
-            else if (type === "sell" && price >= rate)
-                status = "Denied"
-            else if (type === "market") // TODO
-                status = "Next Version"
-
-            const ret = {[id]:{}}
-            if (status === "Executed") {
-                ret[id] = {
-                    "status": status,
-                    "amount": amount,
-                    "price" : price,
-                    "total" : amount * (1 + rate - price)
-                }
-            }
-            else {
-                ret[id] = {
-                    "status": status
-                }
-            }
-            return ret;
+    // prepare data
+    console.log('processing arrived data');
+    const trades2 = trades.map((trade) => {
+        const id = trade[0];
+        const type = trade[1].toLowerCase();
+        const price = trade[2];
+        const allAmount = Number(trade[3]);
+        const leftAmount = Number(trade[3]);
+        const isMarket = trade[2].toLowerCase() === "market"
+        return {
+            status:'new',
+            isMarket:isMarket,
+            id: id,
+            type: type,
+            price: price,
+            allAmount: allAmount,
+            leftAmount: leftAmount,
         }
-    )
+    })
 
-    return data
+    // first process all new market request
+    console.log('processing market requests');
+    const trades3 = trades2.map((t) => {
+        if (t.status === 'new' && t.isMarket) {
+
+            let neededOp = 'buy'
+            if (t.type === "buy") neededOp = 'sell'
+
+            // any operations available
+            const available = trades2
+                .filter((t) => t.status === 'new' && t.type === neededOp)
+                .sort((t1,t2) => Number(t1.price) - Number(t2.price))
+
+            // will amount be sufficient?
+            if (available.length === 0 || available.map((t) => t.leftAmount)
+                .reduce((partial_sum, a) => partial_sum + a,0) < t.allAmount) {
+                t.status = "Denied"
+                return t
+            }
+
+            // reduce the needed amount from the operations
+            const prices = []
+            available.map((a) => {
+                if (t.leftAmount === 0) return a
+                const minVal = Math.min(a.leftAmount, t.leftAmount)
+                a.leftAmount -= minVal;
+                t.leftAmount -= minVal;
+                prices.push([minVal, a.price, a.id])
+
+                // this was not clear what to do with half used operation
+                a.rate = a.price
+                a.status = "Executed"
+            })
+
+            // reaching this point t.leftAmount should be 0
+            t.status = "Executed"
+            const fullSum = prices.reduce((partial_sum, a) => partial_sum + a[0],0)
+            t.rate = prices.reduce((partialRate,p) => partialRate + p[0]*p[1],0) / fullSum;
+            t.orders = prices
+        }
+        return t
+    })
+
+    // process rest of new request
+    console.log('processing non market requests');
+    const rate = await getRate()
+    const trades4 = trades3.map((t) => {
+        if (t.status === 'new') {
+            let status = "Executed"
+            if (t.type === "buy" && t.price <= rate)
+                status = "Denied"
+            else if (t.type === "sell" && t.price >= rate)
+                status = "Denied"
+
+            t.status = status
+            t.rate = rate
+        }
+        return t
+    })
+
+    // prepare response
+    console.log('preparing response');
+    const trades5 = trades4.map((t) => {
+        const ret = {[t.id]: {}}
+        if (t.status === "Executed") {
+            ret[t.id] = {
+                "status": t.status,
+                "amount": t.allAmount,
+                "price": t.price,
+                "total": calculate(t.allAmount, t.rate, t.price)
+            }
+            if (t.isMarket)
+                ret[t.id]['orders'] = t.orders
+        } else {
+            ret[t.id] = {
+                "status": t.status
+            }
+        }
+        return ret;
+    })
+
+    console.log('sending response');
+    return trades5;
 }
 
 router.get('/api/get-rate', async function(req, res, next) {
